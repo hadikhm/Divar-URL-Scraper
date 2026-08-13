@@ -7,9 +7,7 @@ from urllib.parse import urljoin
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
-
 
 BASE_URL = "https://divar.ir"
 SEARCH_RE = re.compile(r"https://divar\.ir/s/[^\s)\]>]+")
@@ -28,8 +26,7 @@ def make_driver():
 
 
 def normalize_search_url(url):
-    url = url.strip()
-    url = url.rstrip(".,;")
+    url = url.strip().rstrip(".,;")
     if not url.startswith("https://divar.ir/s/"):
         return None
     return url
@@ -38,22 +35,33 @@ def normalize_search_url(url):
 def read_search_urls(path):
     text = Path(path).read_text(encoding="utf-8")
     urls = []
-
-    # Accept both plain URL lists and Markdown files containing Divar URLs.
     for match in SEARCH_RE.findall(text):
         url = normalize_search_url(match)
         if url:
             urls.append(url)
-
-    # Also handle a plain line containing a URL if the regex ever needs adjustment.
     if not urls:
         for line in text.splitlines():
             url = normalize_search_url(line)
             if url:
                 urls.append(url)
-
-    # Preserve order while removing duplicate search URLs.
     return list(dict.fromkeys(urls))
+
+
+def extract_listing_urls_snapshot(driver):
+    """Snapshot href strings from the current DOM without retaining WebElements."""
+    hrefs = driver.execute_script("""
+        return Array.from(document.querySelectorAll('a[href]'))
+            .map(a => a.href)
+            .filter(Boolean);
+    """)
+
+    found = set()
+    for href in hrefs or []:
+        url = urljoin(BASE_URL, href)
+        url = url.split("?")[0].split("#")[0]
+        if LISTING_RE.match(url):
+            found.add(url)
+    return found
 
 
 def collect_urls(driver, search_url, max_scrolls=80):
@@ -69,18 +77,9 @@ def collect_urls(driver, search_url, max_scrolls=80):
     previous_count = 0
 
     for scroll_number in range(max_scrolls):
-        elements = driver.find_elements(By.CSS_SELECTOR, "a[href]")
-
-        for element in elements:
-            href = element.get_attribute("href")
-            if not href:
-                continue
-
-            url = urljoin(BASE_URL, href)
-            url = url.split("?")[0].split("#")[0]
-
-            if LISTING_RE.match(url):
-                found.add(url)
+        # Take a point-in-time snapshot of URL strings. Divar can re-render its
+        # DOM asynchronously, so we deliberately do not keep Selenium elements.
+        found.update(extract_listing_urls_snapshot(driver))
 
         current_count = len(found)
         print(
@@ -103,23 +102,13 @@ def collect_urls(driver, search_url, max_scrolls=80):
         )
         time.sleep(2)
 
-    # Final scan.
-    elements = driver.find_elements(By.CSS_SELECTOR, "a[href]")
-    for element in elements:
-        href = element.get_attribute("href")
-        if href:
-            url = urljoin(BASE_URL, href)
-            url = url.split("?")[0].split("#")[0]
-            if LISTING_RE.match(url):
-                found.add(url)
-
+    found.update(extract_listing_urls_snapshot(driver))
     return sorted(found)
 
 
 def save_results(results):
     txt_path = Path("divar_listing_urls.txt")
     csv_path = Path("divar_listing_urls.csv")
-
     unique_urls = sorted(results)
     txt_path.write_text(
         "\n".join(unique_urls) + ("\n" if unique_urls else ""),
@@ -132,8 +121,7 @@ def save_results(results):
         for url in unique_urls:
             writer.writerow([url, " | ".join(results[url])])
 
-    print()
-    print("===================================")
+    print("\n===================================")
     print(f"Collected {len(unique_urls)} unique listing URLs")
     print("===================================")
     print("TXT:", txt_path)
@@ -142,35 +130,22 @@ def save_results(results):
 
 def main():
     parser = argparse.ArgumentParser()
-
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--url", help="One Divar search URL")
-    source.add_argument(
-        "--url-file",
-        help="Text/Markdown file containing one or more Divar search URLs"
-    )
-
-    parser.add_argument(
-        "--max-scrolls",
-        type=int,
-        default=80
-    )
-
+    source.add_argument("--url-file", help="Text/Markdown file containing Divar search URLs")
+    parser.add_argument("--max-scrolls", type=int, default=80)
     parser.add_argument(
         "--delay-between-searches",
         type=float,
         default=5.0,
         help="Seconds to wait between consecutive Divar search URLs"
     )
-
     args = parser.parse_args()
 
     if args.url:
         search_urls = [normalize_search_url(args.url)]
         if not search_urls[0]:
-            raise SystemExit(
-                "The URL must be a Divar search URL beginning with https://divar.ir/s/"
-            )
+            raise SystemExit("The URL must be a Divar search URL beginning with https://divar.ir/s/")
     else:
         search_urls = read_search_urls(args.url_file)
         if not search_urls:
@@ -181,26 +156,19 @@ def main():
 
     driver = make_driver()
     results = {}
-
     try:
         for index, search_url in enumerate(search_urls, start=1):
-            print()
-            print(f"========== Search {index}/{len(search_urls)} ==========")
+            print(f"\n========== Search {index}/{len(search_urls)} ==========")
             urls = collect_urls(driver, search_url, args.max_scrolls)
-
             for url in urls:
                 results.setdefault(url, [])
                 if search_url not in results[url]:
                     results[url].append(search_url)
-
             print(f"Search result: {len(urls)} unique listing URLs")
             print(f"Combined result so far: {len(results)} unique listing URLs")
 
             if index < len(search_urls):
-                print(
-                    f"Waiting {args.delay_between_searches} seconds "
-                    "before the next search..."
-                )
+                print(f"Waiting {args.delay_between_searches} seconds before the next search...")
                 time.sleep(args.delay_between_searches)
     finally:
         driver.quit()
