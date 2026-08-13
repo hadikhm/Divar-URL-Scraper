@@ -3,13 +3,14 @@ name: Divar URL Scraper
 on:
   workflow_dispatch:
     inputs:
-      search_url:
-        description: "Divar search URL"
-        required: true
+      search_urls_source:
+        description: "Raw GitHub URL of the search URL file"
+        required: false
+        default: "https://raw.githubusercontent.com/hadikhm/Chatgptuse/main/carpet-project/search_urls.md"
         type: string
 
       max_scrolls:
-        description: "Maximum number of scrolls"
+        description: "Maximum number of scrolls per search"
         required: false
         default: "80"
         type: string
@@ -19,7 +20,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -36,13 +36,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install selenium
 
+      - name: Download search URL list
+        run: |
+          curl -fL "${{ inputs.search_urls_source }}" -o search_urls.md
+
       - name: Run Divar scraper
         run: |
           python divar_url_scraper.py \
-            --url "${{ inputs.search_url }}" \
+            --url-file search_urls.md \
             --max-scrolls "${{ inputs.max_scrolls }}"
 
-      - name: Upload results
+      - name: Upload combined results
         uses: actions/upload-artifact@v4
         with:
           name: divar-listing-urls
