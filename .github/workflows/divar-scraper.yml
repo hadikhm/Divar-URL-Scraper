@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       search_urls_source:
-        description: "Raw GitHub URL of the search URL file"
+        description: "GitHub API URL of the search URL file"
         required: false
-        default: "https://raw.githubusercontent.com/hadikhm/Chatgptuse/main/carpet-project/search_urls.md"
+        default: "https://api.github.com/repos/hadikhm/Chatgptuse/contents/carpet-project/search_urls.md"
         type: string
       max_scrolls:
         description: "Maximum number of scrolls per search"
@@ -31,7 +31,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install selenium
       - name: Download search URL list
-        run: curl -fL "${{ inputs.search_urls_source }}" -o search_urls.md
+        env:
+          CARPET_REPO_TOKEN: ${{ secrets.CARPET_REPO_TOKEN }}
+        run: |
+          test -n "$CARPET_REPO_TOKEN"
+          curl -fL \
+            -H "Authorization: Bearer $CARPET_REPO_TOKEN" \
+            -H "Accept: application/vnd.github.raw+json" \
+            "${{ inputs.search_urls_source }}" \
+            -o search_urls.md
       - name: Run Divar scraper
         run: python divar_url_scraper.py --url-file search_urls.md --max-scrolls "${{ inputs.max_scrolls }}"
       - name: Upload results
