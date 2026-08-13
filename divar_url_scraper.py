@@ -156,6 +156,13 @@ def main():
         default=80
     )
 
+    parser.add_argument(
+        "--delay-between-searches",
+        type=float,
+        default=5.0,
+        help="Seconds to wait between consecutive Divar search URLs"
+    )
+
     args = parser.parse_args()
 
     if args.url:
@@ -170,6 +177,7 @@ def main():
             raise SystemExit("No valid Divar search URLs were found in the input file.")
 
     print(f"Loaded {len(search_urls)} unique search URLs")
+    print(f"Delay between searches: {args.delay_between_searches} seconds")
 
     driver = make_driver()
     results = {}
@@ -187,6 +195,13 @@ def main():
 
             print(f"Search result: {len(urls)} unique listing URLs")
             print(f"Combined result so far: {len(results)} unique listing URLs")
+
+            if index < len(search_urls):
+                print(
+                    f"Waiting {args.delay_between_searches} seconds "
+                    "before the next search..."
+                )
+                time.sleep(args.delay_between_searches)
     finally:
         driver.quit()
 
