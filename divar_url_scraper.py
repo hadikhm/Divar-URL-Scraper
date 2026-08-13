@@ -1,4 +1,3 @@
-
 import argparse
 import csv
 import re
@@ -13,6 +12,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 
 BASE_URL = "https://divar.ir"
+SEARCH_RE = re.compile(r"https://divar\.ir/s/[^\s)\]>]+")
 LISTING_RE = re.compile(r"^https://divar\.ir/v/[^?#]+")
 
 
@@ -24,13 +24,40 @@ def make_driver():
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1440,2000")
     options.add_argument("--lang=fa-IR")
-
     return webdriver.Chrome(options=options)
+
+
+def normalize_search_url(url):
+    url = url.strip()
+    url = url.rstrip(".,;")
+    if not url.startswith("https://divar.ir/s/"):
+        return None
+    return url
+
+
+def read_search_urls(path):
+    text = Path(path).read_text(encoding="utf-8")
+    urls = []
+
+    # Accept both plain URL lists and Markdown files containing Divar URLs.
+    for match in SEARCH_RE.findall(text):
+        url = normalize_search_url(match)
+        if url:
+            urls.append(url)
+
+    # Also handle a plain line containing a URL if the regex ever needs adjustment.
+    if not urls:
+        for line in text.splitlines():
+            url = normalize_search_url(line)
+            if url:
+                urls.append(url)
+
+    # Preserve order while removing duplicate search URLs.
+    return list(dict.fromkeys(urls))
 
 
 def collect_urls(driver, search_url, max_scrolls=80):
     print("Opening:", search_url)
-
     driver.get(search_url)
 
     WebDriverWait(driver, 30).until(
@@ -42,13 +69,10 @@ def collect_urls(driver, search_url, max_scrolls=80):
     previous_count = 0
 
     for scroll_number in range(max_scrolls):
-
-        # Collect every rendered link.
         elements = driver.find_elements(By.CSS_SELECTOR, "a[href]")
 
         for element in elements:
             href = element.get_attribute("href")
-
             if not href:
                 continue
 
@@ -59,7 +83,6 @@ def collect_urls(driver, search_url, max_scrolls=80):
                 found.add(url)
 
         current_count = len(found)
-
         print(
             f"Scroll {scroll_number + 1}/{max_scrolls} "
             f"- {current_count} unique listing URLs"
@@ -71,7 +94,6 @@ def collect_urls(driver, search_url, max_scrolls=80):
             unchanged_cycles = 0
             previous_count = current_count
 
-        # Five consecutive scroll cycles with no new listings.
         if unchanged_cycles >= 5:
             print("No new listings detected. Stopping.")
             break
@@ -79,49 +101,40 @@ def collect_urls(driver, search_url, max_scrolls=80):
         driver.execute_script(
             "window.scrollTo(0, document.body.scrollHeight);"
         )
-
         time.sleep(2)
 
     # Final scan.
     elements = driver.find_elements(By.CSS_SELECTOR, "a[href]")
-
     for element in elements:
         href = element.get_attribute("href")
-
         if href:
             url = urljoin(BASE_URL, href)
             url = url.split("?")[0].split("#")[0]
-
             if LISTING_RE.match(url):
                 found.add(url)
 
     return sorted(found)
 
 
-def save_results(urls):
+def save_results(results):
     txt_path = Path("divar_listing_urls.txt")
     csv_path = Path("divar_listing_urls.csv")
 
+    unique_urls = sorted(results)
     txt_path.write_text(
-        "\n".join(urls) + ("\n" if urls else ""),
+        "\n".join(unique_urls) + ("\n" if unique_urls else ""),
         encoding="utf-8"
     )
 
-    with csv_path.open(
-        "w",
-        newline="",
-        encoding="utf-8-sig"
-    ) as f:
-
+    with csv_path.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
-        writer.writerow(["url"])
-
-        for url in urls:
-            writer.writerow([url])
+        writer.writerow(["url", "source_search_urls"])
+        for url in unique_urls:
+            writer.writerow([url, " | ".join(results[url])])
 
     print()
     print("===================================")
-    print(f"Collected {len(urls)} unique URLs")
+    print(f"Collected {len(unique_urls)} unique listing URLs")
     print("===================================")
     print("TXT:", txt_path)
     print("CSV:", csv_path)
@@ -130,10 +143,11 @@ def save_results(urls):
 def main():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument(
-        "--url",
-        required=True,
-        help="Divar search URL"
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--url", help="One Divar search URL")
+    source.add_argument(
+        "--url-file",
+        help="Text/Markdown file containing one or more Divar search URLs"
     )
 
     parser.add_argument(
@@ -144,23 +158,39 @@ def main():
 
     args = parser.parse_args()
 
-    if not args.url.startswith("https://divar.ir/s/"):
-        raise SystemExit(
-            "The URL must be a Divar search URL beginning with https://divar.ir/s/"
-        )
+    if args.url:
+        search_urls = [normalize_search_url(args.url)]
+        if not search_urls[0]:
+            raise SystemExit(
+                "The URL must be a Divar search URL beginning with https://divar.ir/s/"
+            )
+    else:
+        search_urls = read_search_urls(args.url_file)
+        if not search_urls:
+            raise SystemExit("No valid Divar search URLs were found in the input file.")
+
+    print(f"Loaded {len(search_urls)} unique search URLs")
 
     driver = make_driver()
+    results = {}
 
     try:
-        urls = collect_urls(
-            driver,
-            args.url,
-            args.max_scrolls
-        )
+        for index, search_url in enumerate(search_urls, start=1):
+            print()
+            print(f"========== Search {index}/{len(search_urls)} ==========")
+            urls = collect_urls(driver, search_url, args.max_scrolls)
+
+            for url in urls:
+                results.setdefault(url, [])
+                if search_url not in results[url]:
+                    results[url].append(search_url)
+
+            print(f"Search result: {len(urls)} unique listing URLs")
+            print(f"Combined result so far: {len(results)} unique listing URLs")
     finally:
         driver.quit()
 
-    save_results(urls)
+    save_results(results)
 
 
 if __name__ == "__main__":
